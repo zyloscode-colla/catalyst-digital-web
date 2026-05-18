@@ -1,15 +1,15 @@
 import type { ContactDetail } from "@/types";
 
 export const contactDetails: ContactDetail[] = [
-  { id: "email", label: "Email", value: "hello@catalystdigital.io" },
-  { id: "phone", label: "Phone", value: "+1 (555) 000-0000" },
-  { id: "location", label: "Headquarters", value: "San Francisco, CA" },
+  { id: "email", label: "Email", value: "ceo@catalystdigitals.com" },
+  { id: "phone", label: "Phone", value: "+94 72 280 0104" },
+  { id: "location", label: "Headquarters", value: "Colombo, Sri Lanka" },
 ];
 
 export const officeInfo = {
   title: "Find us",
-  addressLine1: "101 Innovation Blvd, Suite 400",
-  addressLine2: "San Francisco, CA 94105",
+  addressLine1: "Colombo",
+  addressLine2: "Sri Lanka",
 } as const;
 
 export const trustBadge = {

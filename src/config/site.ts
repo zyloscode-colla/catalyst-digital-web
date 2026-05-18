@@ -1,7 +1,7 @@
 export const siteConfig = {
   name: "Catalyst Digital",
-  tagline: "We design and build digital products that move businesses forward.",
-  email: "hello@catalystdigital.io",
+  tagline: "A Software Development Studio building practical, scalable solutions for real operational challenges.",
+  email: "hceo@catalystdigitals.com",
   social: {
     linkedin: "https://www.linkedin.com/company/catalyst-digital",
   },
