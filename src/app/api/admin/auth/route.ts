@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import {
   clearSessionCookie,
   createSessionCookie,
-  DEMO_USERS,
   getCurrentUser,
+  verifyCredentials,
 } from "@/lib/auth/session";
 
 export async function GET() {
@@ -29,16 +29,16 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Email and password are required" }, { status: 400 });
       }
 
-      const match = DEMO_USERS[email.toLowerCase().trim()];
-      if (!match || match.password !== password) {
-        return NextResponse.json({ error: "Invalid email address or credentials" }, { status: 401 });
+      const result = await verifyCredentials(email, password);
+      if (!result.success || !result.user) {
+        return NextResponse.json({ error: result.error || "Invalid email address or credentials" }, { status: 401 });
       }
 
-      await createSessionCookie(match.user);
+      await createSessionCookie(result.user);
       return NextResponse.json({
         success: true,
-        user: match.user,
-        message: `Welcome back, ${match.user.fullName}`,
+        user: result.user,
+        message: `Welcome back, ${result.user.fullName}`,
       });
     }
 

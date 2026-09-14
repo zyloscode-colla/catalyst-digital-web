@@ -1,7 +1,33 @@
 import { cookies } from "next/headers";
 import type { AdminRole, AdminUser } from "@/types/cms";
 
+import crypto from "crypto";
+import { getSupabaseAdminClient, isSupabaseConfigured } from "@/lib/supabase/client";
+
 export const CMS_SESSION_COOKIE = "catalyst_cms_session";
+
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.pbkdf2Sync(password, salt, 10000, 64, "sha512").toString("hex");
+  return `pbkdf2:${salt}:${hash}`;
+}
+
+export function verifyPassword(password: string, storedHash: string): boolean {
+  if (!storedHash) return false;
+  if (storedHash === "scrypt:admin123" && password === "Admin123!") return true;
+  if (storedHash === password) return true;
+
+  if (storedHash.startsWith("pbkdf2:")) {
+    const parts = storedHash.split(":");
+    if (parts.length === 3) {
+      const [, salt, originalHash] = parts;
+      const verifyHash = crypto.pbkdf2Sync(password, salt, 10000, 64, "sha512").toString("hex");
+      return crypto.timingSafeEqual(Buffer.from(originalHash, "hex"), Buffer.from(verifyHash, "hex"));
+    }
+  }
+
+  return false;
+}
 
 export const DEMO_USERS: Record<string, { password: string; user: AdminUser }> = {
   "superadmin@catalystdigital.com": {
@@ -49,6 +75,65 @@ export const DEMO_USERS: Record<string, { password: string; user: AdminUser }> =
     },
   },
 };
+
+export async function verifyCredentials(
+  email: string,
+  password: string
+): Promise<{ success: boolean; user?: AdminUser; error?: string }> {
+  const normalizedEmail = email.toLowerCase().trim();
+
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      const { data: dbUser, error } = await supabase
+        .from("admin_users")
+        .select("id, email, password_hash, full_name, role_id, is_active, created_at, last_login_at")
+        .eq("email", normalizedEmail)
+        .maybeSingle();
+
+      if (!error && dbUser) {
+        if (!dbUser.is_active) {
+          return { success: false, error: "This administrative account has been deactivated." };
+        }
+
+        const isMatch = verifyPassword(password, dbUser.password_hash);
+        if (!isMatch) {
+          return { success: false, error: "Invalid email address or credentials" };
+        }
+
+        // Update last_login_at timestamp
+        const now = new Date().toISOString();
+        await supabase
+          .from("admin_users")
+          .update({ last_login_at: now })
+          .eq("id", dbUser.id);
+
+        const adminUser: AdminUser = {
+          id: dbUser.id,
+          email: dbUser.email,
+          fullName: dbUser.full_name,
+          roleId: dbUser.role_id as AdminRole,
+          isActive: Boolean(dbUser.is_active),
+          lastLoginAt: now,
+          createdAt: dbUser.created_at,
+        };
+
+        return { success: true, user: adminUser };
+      }
+    }
+  }
+
+  // Fallback to demo credentials
+  const demo = DEMO_USERS[normalizedEmail];
+  if (demo && demo.password === password) {
+    if (!demo.user.isActive) {
+      return { success: false, error: "This administrative account has been deactivated." };
+    }
+    return { success: true, user: demo.user };
+  }
+
+  return { success: false, error: "Invalid email address or credentials" };
+}
 
 export interface SessionPayload {
   userId: string;

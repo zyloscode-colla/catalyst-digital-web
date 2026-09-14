@@ -2,31 +2,42 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth/session";
 import { hasPermission } from "@/lib/auth/permissions";
 import {
+  createAdminUser,
   createBlogPost,
   createFaq,
+  createPermission,
   createProject,
   createService,
   createTeamMember,
+  deleteAdminUser,
   deleteBlogPost,
   deleteFaq,
+  deletePermission,
   deleteProject,
   deleteService,
   deleteTeamMember,
+  getAdminUsers,
   getBlogPosts,
   getFaqs,
   getInquiries,
   getPagesConfig,
+  getPermissions,
   getProjects,
+  getRolesWithPermissions,
   getSectionConfigs,
   getServices,
   getSiteSettings,
   getTeamMembers,
+  toggleAdminUserActive,
   togglePageActive,
   toggleSectionActive,
+  updateAdminUser,
   updateBlogPost,
   updateFaq,
   updateInquiryStatus,
+  updatePermission,
   updateProject,
+  updateRolePermissions,
   updateSectionConfig,
   updateService,
   updateSiteSettings,
@@ -62,6 +73,13 @@ export async function GET(request: Request) {
         return NextResponse.json(await getFaqs(false));
       case "inquiries":
         return NextResponse.json(await getInquiries());
+      case "users":
+        return NextResponse.json(await getAdminUsers());
+      case "permissions":
+        return NextResponse.json({
+          permissions: await getPermissions(),
+          roles: await getRolesWithPermissions(),
+        });
       default:
         return NextResponse.json({
           settings: await getSiteSettings(),
@@ -73,6 +91,9 @@ export async function GET(request: Request) {
           blog: await getBlogPosts(false),
           faqs: await getFaqs(false),
           inquiries: await getInquiries(),
+          users: await getAdminUsers(),
+          permissions: await getPermissions(),
+          roles: await getRolesWithPermissions(),
         });
     }
   } catch (error) {
@@ -229,6 +250,58 @@ export async function POST(request: Request) {
         if (action === "updateStatus") {
           const updated = await updateInquiryStatus(data.id, data.status);
           return NextResponse.json({ success: true, data: updated });
+        }
+        break;
+      }
+
+      case "users": {
+        if (!hasPermission(user.roleId, "users:manage")) {
+          return NextResponse.json({ error: "Forbidden: insufficient permissions to manage administrators" }, { status: 403 });
+        }
+        if (action === "create") {
+          const created = await createAdminUser(data);
+          return NextResponse.json({ success: true, data: created });
+        }
+        if (action === "update") {
+          const updated = await updateAdminUser(data.id, data, data.newPassword);
+          return NextResponse.json({ success: true, data: updated });
+        }
+        if (action === "toggleActive") {
+          const updated = await toggleAdminUserActive(data.id, data.isActive, user.id);
+          return NextResponse.json({ success: true, data: updated });
+        }
+        if (action === "delete") {
+          const result = await deleteAdminUser(data.id, user.id);
+          if (!result.success) {
+            return NextResponse.json({ error: result.error || "Failed to delete administrator" }, { status: 400 });
+          }
+          return NextResponse.json({ success: true });
+        }
+        break;
+      }
+
+      case "permissions": {
+        if (!hasPermission(user.roleId, "users:manage")) {
+          return NextResponse.json({ error: "Forbidden: insufficient permissions to manage access controls" }, { status: 403 });
+        }
+        if (action === "create") {
+          const created = await createPermission(data);
+          return NextResponse.json({ success: true, data: created });
+        }
+        if (action === "update") {
+          const updated = await updatePermission(data.id, data);
+          return NextResponse.json({ success: true, data: updated });
+        }
+        if (action === "delete") {
+          const result = await deletePermission(data.id);
+          if (!result.success) {
+            return NextResponse.json({ error: result.error || "Failed to delete permission" }, { status: 400 });
+          }
+          return NextResponse.json({ success: true });
+        }
+        if (action === "updateRolePermissions") {
+          const result = await updateRolePermissions(data.roleId, data.permissionIds);
+          return NextResponse.json({ success: true, data: result });
         }
         break;
       }

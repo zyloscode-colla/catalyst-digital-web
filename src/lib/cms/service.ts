@@ -1,6 +1,9 @@
 import { getSupabaseAdminClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { initialCMSStore } from "./store";
+import { hashPassword } from "@/lib/auth/session";
+import { PERMISSIONS as DEFAULT_PERMISSIONS, ROLES as DEFAULT_ROLES } from "@/lib/auth/permissions";
 import type {
+  AdminRole,
   AdminUser,
   BlogPostItem,
   ContactInquiry,
@@ -9,7 +12,10 @@ import type {
   FeaturedCaseStudyCMS,
   KeyMetricCMS,
   PageConfig,
+  Permission,
+  PermissionId,
   ProjectItem,
+  Role,
   SectionConfig,
   ServiceCaseCMS,
   ServiceItem,
@@ -862,6 +868,355 @@ export async function updateFeaturedCaseStudy(patch: Partial<FeaturedCaseStudyCM
   return memoryStore.featuredCaseStudy;
 }
 
+// ==============================================================================
+// 14. Administrators & RBAC User Management
+// ==============================================================================
+
+export interface CreateAdminUserInput {
+  email: string;
+  fullName: string;
+  roleId: AdminRole;
+  password?: string;
+  isActive?: boolean;
+}
+
 export async function getAdminUsers(): Promise<AdminUser[]> {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("admin_users")
+        .select("id, email, full_name, role_id, is_active, created_at, last_login_at")
+        .order("created_at", { ascending: true });
+
+      if (!error && data && data.length > 0) {
+        return data.map((u) => ({
+          id: u.id,
+          email: u.email,
+          fullName: u.full_name,
+          roleId: u.role_id as AdminRole,
+          isActive: Boolean(u.is_active),
+          lastLoginAt: u.last_login_at || undefined,
+          createdAt: u.created_at,
+        }));
+      }
+    }
+  }
   return memoryStore.adminUsers;
 }
+
+export async function createAdminUser(input: CreateAdminUserInput): Promise<AdminUser> {
+  const normalizedEmail = input.email.toLowerCase().trim();
+  const passwordToHash = input.password && input.password.trim().length > 0 ? input.password : "Admin123!";
+  const passwordHash = hashPassword(passwordToHash);
+  const now = new Date().toISOString();
+
+  let newId = `usr-${Date.now()}`;
+
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("admin_users")
+        .insert({
+          email: normalizedEmail,
+          password_hash: passwordHash,
+          full_name: input.fullName.trim(),
+          role_id: input.roleId,
+          is_active: input.isActive !== undefined ? input.isActive : true,
+        })
+        .select("id, email, full_name, role_id, is_active, created_at")
+        .single();
+
+      if (!error && data) {
+        const created: AdminUser = {
+          id: data.id,
+          email: data.email,
+          fullName: data.full_name,
+          roleId: data.role_id as AdminRole,
+          isActive: Boolean(data.is_active),
+          createdAt: data.created_at,
+        };
+        memoryStore.adminUsers = [...memoryStore.adminUsers, created];
+        return created;
+      }
+      if (error) {
+        throw new Error(error.message);
+      }
+    }
+  }
+
+  const createdUser: AdminUser = {
+    id: newId,
+    email: normalizedEmail,
+    fullName: input.fullName.trim(),
+    roleId: input.roleId,
+    isActive: input.isActive !== undefined ? input.isActive : true,
+    createdAt: now,
+  };
+  memoryStore.adminUsers = [...memoryStore.adminUsers, createdUser];
+  return createdUser;
+}
+
+export async function updateAdminUser(
+  id: string,
+  patch: Partial<AdminUser>,
+  newPassword?: string
+): Promise<AdminUser> {
+  const updatePayload: Record<string, unknown> = {};
+
+  if (patch.fullName !== undefined) updatePayload.full_name = patch.fullName.trim();
+  if (patch.email !== undefined) updatePayload.email = patch.email.toLowerCase().trim();
+  if (patch.roleId !== undefined) updatePayload.role_id = patch.roleId;
+  if (patch.isActive !== undefined) updatePayload.is_active = patch.isActive;
+
+  if (newPassword && newPassword.trim().length > 0) {
+    updatePayload.password_hash = hashPassword(newPassword.trim());
+  }
+
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("admin_users")
+        .update(updatePayload)
+        .eq("id", id)
+        .select("id, email, full_name, role_id, is_active, created_at, last_login_at")
+        .single();
+
+      if (!error && data) {
+        const updated: AdminUser = {
+          id: data.id,
+          email: data.email,
+          fullName: data.full_name,
+          roleId: data.role_id as AdminRole,
+          isActive: Boolean(data.is_active),
+          lastLoginAt: data.last_login_at || undefined,
+          createdAt: data.created_at,
+        };
+        memoryStore.adminUsers = memoryStore.adminUsers.map((u) => (u.id === id ? updated : u));
+        return updated;
+      }
+      if (error) {
+        throw new Error(error.message);
+      }
+    }
+  }
+
+  const existing = memoryStore.adminUsers.find((u) => u.id === id);
+  if (!existing) {
+    throw new Error("Admin user not found");
+  }
+
+  const updated: AdminUser = {
+    ...existing,
+    ...patch,
+  };
+  memoryStore.adminUsers = memoryStore.adminUsers.map((u) => (u.id === id ? updated : u));
+  return updated;
+}
+
+export async function deleteAdminUser(
+  id: string,
+  requesterUserId?: string
+): Promise<{ success: boolean; error?: string }> {
+  if (requesterUserId && requesterUserId === id) {
+    return { success: false, error: "You cannot delete your own administrative account." };
+  }
+
+  // Check last super admin safeguard
+  const allUsers = await getAdminUsers();
+  const targetUser = allUsers.find((u) => u.id === id);
+  if (!targetUser) {
+    return { success: false, error: "Administrator account not found." };
+  }
+
+  if (targetUser.roleId === "super_admin") {
+    const activeSuperAdmins = allUsers.filter((u) => u.roleId === "super_admin" && u.isActive);
+    if (activeSuperAdmins.length <= 1) {
+      return { success: false, error: "Cannot delete the last active Super Administrator." };
+    }
+  }
+
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      const { error } = await supabase.from("admin_users").delete().eq("id", id);
+      if (error) {
+        return { success: false, error: error.message };
+      }
+    }
+  }
+
+  memoryStore.adminUsers = memoryStore.adminUsers.filter((u) => u.id !== id);
+  return { success: true };
+}
+
+export async function toggleAdminUserActive(
+  id: string,
+  isActive: boolean,
+  requesterUserId?: string
+): Promise<AdminUser> {
+  if (requesterUserId && requesterUserId === id && !isActive) {
+    throw new Error("You cannot deactivate your own administrative account.");
+  }
+
+  const allUsers = await getAdminUsers();
+  const targetUser = allUsers.find((u) => u.id === id);
+  if (!targetUser) {
+    throw new Error("Administrator account not found.");
+  }
+
+  if (!isActive && targetUser.roleId === "super_admin") {
+    const activeSuperAdmins = allUsers.filter((u) => u.roleId === "super_admin" && u.isActive);
+    if (activeSuperAdmins.length <= 1) {
+      throw new Error("Cannot deactivate the last active Super Administrator.");
+    }
+  }
+
+  return updateAdminUser(id, { isActive });
+}
+
+// ==============================================================================
+// 15. Permissions & RBAC Capability Management
+// ==============================================================================
+
+export async function getPermissions(): Promise<Permission[]> {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("permissions")
+        .select("id, name, category, description")
+        .order("category", { ascending: true });
+
+      if (!error && data && data.length > 0) {
+        return data as Permission[];
+      }
+    }
+  }
+  return DEFAULT_PERMISSIONS;
+}
+
+export async function createPermission(data: Permission): Promise<Permission> {
+  const perm: Permission = {
+    id: data.id.trim().toLowerCase(),
+    name: data.name.trim(),
+    category: data.category.trim(),
+    description: data.description.trim(),
+  };
+
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      const { error } = await supabase.from("permissions").insert(perm);
+      if (error) throw new Error(error.message);
+
+      // By default, grant new permission to super_admin
+      await supabase.from("role_permissions").insert({
+        role_id: "super_admin",
+        permission_id: perm.id,
+      });
+    }
+  }
+
+  return perm;
+}
+
+export async function updatePermission(id: string, patch: Partial<Permission>): Promise<Permission> {
+  const updatePayload: Record<string, unknown> = {};
+  if (patch.name !== undefined) updatePayload.name = patch.name.trim();
+  if (patch.category !== undefined) updatePayload.category = patch.category.trim();
+  if (patch.description !== undefined) updatePayload.description = patch.description.trim();
+
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("permissions")
+        .update(updatePayload)
+        .eq("id", id)
+        .select("id, name, category, description")
+        .single();
+
+      if (!error && data) {
+        return data as Permission;
+      }
+      if (error) throw new Error(error.message);
+    }
+  }
+
+  const existing = DEFAULT_PERMISSIONS.find((p) => p.id === id);
+  return {
+    id: id as PermissionId,
+    name: patch.name || existing?.name || id,
+    category: patch.category || existing?.category || "System",
+    description: patch.description || existing?.description || "",
+  };
+}
+
+export async function deletePermission(id: string): Promise<{ success: boolean; error?: string }> {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      // First delete all role assignments
+      await supabase.from("role_permissions").delete().eq("permission_id", id);
+      const { error } = await supabase.from("permissions").delete().eq("id", id);
+      if (error) return { success: false, error: error.message };
+    }
+  }
+  return { success: true };
+}
+
+export async function getRolesWithPermissions(): Promise<Role[]> {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      const [{ data: rolesData, error: rolesErr }, { data: mappingsData, error: mapErr }] = await Promise.all([
+        supabase.from("roles").select("id, name, description"),
+        supabase.from("role_permissions").select("role_id, permission_id"),
+      ]);
+
+      if (!rolesErr && rolesData && rolesData.length > 0) {
+        const mappings = mappingsData || [];
+        return rolesData.map((r) => {
+          const perms = mappings.filter((m) => m.role_id === r.id).map((m) => m.permission_id as PermissionId);
+          return {
+            id: r.id as AdminRole,
+            name: r.name,
+            description: r.description,
+            permissions: perms,
+          };
+        });
+      }
+    }
+  }
+
+  return Object.values(DEFAULT_ROLES);
+}
+
+export async function updateRolePermissions(
+  roleId: AdminRole,
+  permissionIds: PermissionId[]
+): Promise<{ success: boolean; roleId: AdminRole; permissionIds: PermissionId[] }> {
+  if (isSupabaseConfigured()) {
+    const supabase = getSupabaseAdminClient();
+    if (supabase) {
+      // Delete existing role permissions for this role
+      await supabase.from("role_permissions").delete().eq("role_id", roleId);
+
+      // Insert new role permissions
+      if (permissionIds.length > 0) {
+        const inserts = permissionIds.map((pid) => ({
+          role_id: roleId,
+          permission_id: pid,
+        }));
+        const { error } = await supabase.from("role_permissions").insert(inserts);
+        if (error) throw new Error(error.message);
+      }
+    }
+  }
+
+  return { success: true, roleId, permissionIds };
+}
+

@@ -12,7 +12,8 @@ export type PermissionId =
   | 'blog:manage'
   | 'faqs:manage'
   | 'inquiries:read'
-  | 'inquiries:manage';
+  | 'inquiries:manage'
+  | (string & {});
 
 export interface AdminUser {
   id: string;
@@ -27,7 +28,7 @@ export interface AdminUser {
 export interface Permission {
   id: PermissionId;
   name: string;
-  category: 'System' | 'Content' | 'Communication' | 'Security';
+  category: 'System' | 'Content' | 'Communication' | 'Security' | string;
   description: string;
 }
 
