@@ -23,11 +23,22 @@ import {
   EyeOff,
   Save,
   ShieldAlert,
-  UserCheck,
-  Sparkles,
+  Cookie,
+  Laptop,
+  LogOut,
+  RefreshCw,
+  KeyRound,
+  Fingerprint,
 } from "lucide-react";
-import type { AdminRole, AdminUser, Permission, PermissionId, Role } from "@/types/cms";
-import { PERMISSIONS as DEFAULT_PERMISSIONS, ROLES as DEFAULT_ROLES } from "@/lib/auth/permissions";
+import type { AdminRole, AdminUser, Permission, Role } from "@/types/cms";
+import {
+  PERMISSIONS as DEFAULT_PERMISSIONS,
+  ROLES as DEFAULT_ROLES,
+  ROLE_HIERARCHY,
+  canManageUser,
+  canAssignRole,
+  canManagePermissionsMatrix,
+} from "@/lib/auth/permissions";
 
 const ROLE_CONFIG: Record<
   AdminRole,
@@ -63,8 +74,30 @@ const ROLE_CONFIG: Record<
   },
 };
 
+interface SessionItem {
+  id: string;
+  userId: string;
+  email: string;
+  fullName: string;
+  roleId: AdminRole;
+  ipAddress: string;
+  userAgent: string;
+  createdAt: string;
+  lastActiveAt: string;
+  expiresAt: string;
+  isCurrent?: boolean;
+}
+
+interface CookieSecurityMeta {
+  httpOnly: boolean;
+  sameSite: string;
+  secure: boolean;
+  maxAgeDays: number;
+  validation: string;
+}
+
 export default function UsersPermissionsManager() {
-  const [activeTab, setActiveTab] = useState<"users" | "permissions">("users");
+  const [activeTab, setActiveTab] = useState<"users" | "permissions" | "sessions">("users");
 
   // Current authenticated user session
   const [currentUser, setCurrentUser] = useState<AdminUser | null>(null);
@@ -78,6 +111,11 @@ export default function UsersPermissionsManager() {
     editor: DEFAULT_ROLES.editor.permissions,
     viewer: DEFAULT_ROLES.viewer.permissions,
   });
+
+  // Sessions state
+  const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [cookieMeta, setCookieMeta] = useState<CookieSecurityMeta | null>(null);
+  const [cookieName, setCookieName] = useState<string>("catalyst_cms_session");
 
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -118,6 +156,9 @@ export default function UsersPermissionsManager() {
   const [hasUnsavedRoleChanges, setHasUnsavedRoleChanges] = useState(false);
   const [isSavingRoles, setIsSavingRoles] = useState(false);
 
+  // Session Revocation state
+  const [isRevokingSession, setIsRevokingSession] = useState(false);
+
   useEffect(() => {
     fetchInitialData();
   }, []);
@@ -125,10 +166,11 @@ export default function UsersPermissionsManager() {
   async function fetchInitialData() {
     try {
       setLoading(true);
-      const [authRes, usersRes, permsRes] = await Promise.all([
+      const [authRes, usersRes, permsRes, sessionsRes] = await Promise.all([
         fetch("/api/admin/auth"),
         fetch("/api/admin/cms?entity=users"),
         fetch("/api/admin/cms?entity=permissions"),
+        fetch("/api/admin/cms?entity=sessions"),
       ]);
 
       if (authRes.ok) {
@@ -161,9 +203,16 @@ export default function UsersPermissionsManager() {
           setRolePermissions(map);
         }
       }
+
+      if (sessionsRes.ok) {
+        const sData = await sessionsRes.json();
+        if (Array.isArray(sData?.sessions)) setSessions(sData.sessions);
+        if (sData?.security) setCookieMeta(sData.security);
+        if (sData?.cookieName) setCookieName(sData.cookieName);
+      }
     } catch (err) {
       console.error(err);
-      showFeedback("error", "Failed to load administrators and permissions");
+      showFeedback("error", "Failed to load administrators, permissions, or session security data");
     } finally {
       setLoading(false);
     }
@@ -171,19 +220,28 @@ export default function UsersPermissionsManager() {
 
   function showFeedback(type: "success" | "error", message: string) {
     setFeedback({ type, message });
-    setTimeout(() => setFeedback(null), 4500);
+    setTimeout(() => setFeedback(null), 5000);
   }
 
+  const isSuperAdmin = currentUser?.roleId === "super_admin";
+
   // ============================================================================
-  // User Actions (Create, Edit, Toggle, Delete)
+  // User Actions (Create, Edit, Toggle, Delete) with Hierarchical Enforcement
   // ============================================================================
 
   function openCreateUserModal() {
+    // Default to the highest role this user can assign
+    const availableRoles = (["viewer", "editor", "content_admin", "super_admin"] as AdminRole[]).filter(
+      (r) => currentUser && canAssignRole(currentUser.roleId, r)
+    );
+
+    const defaultRole = availableRoles[availableRoles.length - 1] || "editor";
+
     setEditingUser(null);
     setUserFormData({
       fullName: "",
       email: "",
-      roleId: "editor",
+      roleId: defaultRole,
       password: "",
       isActive: true,
     });
@@ -192,12 +250,23 @@ export default function UsersPermissionsManager() {
   }
 
   function openEditUserModal(user: AdminUser) {
+    const isSelf = currentUser?.id === user.id;
+
+    // Hierarchy check: non-super admin cannot edit equal or higher rank
+    if (!isSelf && currentUser && !canManageUser(currentUser.roleId, user.roleId, false)) {
+      showFeedback(
+        "error",
+        `Hierarchical Privilege Lock: You cannot modify an administrator of equal or higher rank (${ROLE_CONFIG[user.roleId]?.label}).`
+      );
+      return;
+    }
+
     setEditingUser(user);
     setUserFormData({
       fullName: user.fullName,
       email: user.email,
       roleId: user.roleId,
-      password: "", // blank unless resetting
+      password: "",
       isActive: user.isActive,
     });
     setShowPassword(false);
@@ -207,26 +276,39 @@ export default function UsersPermissionsManager() {
   async function handleSaveUser(e: React.FormEvent) {
     e.preventDefault();
     if (!userFormData.fullName.trim() || !userFormData.email.trim()) {
-      showFeedback("error", "Full name and email address are required");
+      showFeedback("error", "Full name and email address are required.");
       return;
     }
 
-    if (!editingUser && (!userFormData.password || userFormData.password.length < 6)) {
-      showFeedback("error", "Initial password must be at least 6 characters");
+    const isEdit = Boolean(editingUser);
+    const isSelf = currentUser?.id === editingUser?.id;
+
+    // Self-privilege check
+    if (isEdit && isSelf && userFormData.roleId !== currentUser?.roleId) {
+      showFeedback("error", "Self-Privilege Guard: You cannot modify your own administrative role tier.");
+      return;
+    }
+
+    if (isEdit && isSelf && !userFormData.isActive) {
+      showFeedback("error", "Self-Lockout Guard: You cannot deactivate your own account.");
+      return;
+    }
+
+    if (!isEdit && (!userFormData.password || userFormData.password.length < 6)) {
+      showFeedback("error", "Initial password must be at least 6 characters.");
       return;
     }
 
     try {
       setIsSubmittingUser(true);
-      const isEdit = Boolean(editingUser);
       const action = isEdit ? "update" : "create";
       const payloadData = isEdit
         ? {
             id: editingUser!.id,
             fullName: userFormData.fullName,
             email: userFormData.email,
-            roleId: userFormData.roleId,
-            isActive: userFormData.isActive,
+            roleId: isSelf ? currentUser?.roleId : userFormData.roleId,
+            isActive: isSelf ? true : userFormData.isActive,
             newPassword: userFormData.password ? userFormData.password : undefined,
           }
         : {
@@ -251,8 +333,8 @@ export default function UsersPermissionsManager() {
       showFeedback(
         "success",
         isEdit
-          ? `Administrator ${userFormData.fullName} updated successfully`
-          : `Administrator ${userFormData.fullName} created successfully`
+          ? `Administrator ${userFormData.fullName} updated successfully.`
+          : `Administrator ${userFormData.fullName} created successfully.`
       );
       setUserModalOpen(false);
       await fetchInitialData();
@@ -265,8 +347,16 @@ export default function UsersPermissionsManager() {
   }
 
   async function handleToggleUserActive(target: AdminUser) {
-    if (currentUser?.id === target.id && target.isActive) {
-      showFeedback("error", "You cannot deactivate your own administrator account.");
+    if (currentUser?.id === target.id) {
+      showFeedback("error", "Self-Lockout Guard: You cannot deactivate your own administrative account.");
+      return;
+    }
+
+    if (currentUser && !canManageUser(currentUser.roleId, target.roleId, false)) {
+      showFeedback(
+        "error",
+        `Hierarchical Privilege Lock: You cannot toggle the status of an administrator of equal or higher rank.`
+      );
       return;
     }
 
@@ -292,7 +382,6 @@ export default function UsersPermissionsManager() {
 
       showFeedback("success", `Updated ${target.fullName} status to ${newStatus ? "Active" : "Inactive"}`);
     } catch (err: unknown) {
-      // Revert optimistic update
       setUsers((prev) => prev.map((u) => (u.id === target.id ? { ...u, isActive: target.isActive } : u)));
       const msg = err instanceof Error ? err.message : "Failed to toggle status";
       showFeedback("error", msg);
@@ -301,6 +390,19 @@ export default function UsersPermissionsManager() {
 
   async function handleDeleteUser() {
     if (!userDeleteTarget) return;
+
+    if (currentUser?.id === userDeleteTarget.id) {
+      showFeedback("error", "Self-Deletion Guard: You cannot delete your own account.");
+      return;
+    }
+
+    if (currentUser && !canManageUser(currentUser.roleId, userDeleteTarget.roleId, false)) {
+      showFeedback(
+        "error",
+        `Hierarchical Privilege Lock: You cannot delete an administrator of equal or higher rank.`
+      );
+      return;
+    }
 
     try {
       setIsSubmittingUser(true);
@@ -319,7 +421,7 @@ export default function UsersPermissionsManager() {
         throw new Error(resJson.error || "Failed to delete administrator");
       }
 
-      showFeedback("success", `Administrator ${userDeleteTarget.fullName} deleted successfully`);
+      showFeedback("success", `Administrator ${userDeleteTarget.fullName} deleted successfully.`);
       setUserDeleteTarget(null);
       await fetchInitialData();
     } catch (err: unknown) {
@@ -331,10 +433,14 @@ export default function UsersPermissionsManager() {
   }
 
   // ============================================================================
-  // Permission Actions (Create, Edit, Delete, Role Assignment)
+  // Permission Actions (Super Admin Exclusive)
   // ============================================================================
 
   function openCreatePermModal() {
+    if (!isSuperAdmin) {
+      showFeedback("error", "Privilege Lock: Only Super Administrators can define new capabilities.");
+      return;
+    }
     setEditingPerm(null);
     setPermFormData({
       id: "",
@@ -346,6 +452,10 @@ export default function UsersPermissionsManager() {
   }
 
   function openEditPermModal(perm: Permission) {
+    if (!isSuperAdmin) {
+      showFeedback("error", "Privilege Lock: Only Super Administrators can edit permission capability definitions.");
+      return;
+    }
     setEditingPerm(perm);
     setPermFormData({
       id: perm.id,
@@ -358,13 +468,13 @@ export default function UsersPermissionsManager() {
 
   async function handleSavePermission(e: React.FormEvent) {
     e.preventDefault();
-    if (!permFormData.name.trim()) {
-      showFeedback("error", "Permission capability name is required");
+    if (!isSuperAdmin) {
+      showFeedback("error", "Privilege Lock: Only Super Administrators can alter permissions.");
       return;
     }
 
-    if (!editingPerm && !permFormData.id.trim()) {
-      showFeedback("error", "Permission key identifier is required (e.g. reports:export)");
+    if (!permFormData.name.trim()) {
+      showFeedback("error", "Permission capability name is required");
       return;
     }
 
@@ -400,8 +510,8 @@ export default function UsersPermissionsManager() {
       showFeedback(
         "success",
         isEdit
-          ? `Permission ${permFormData.name} updated successfully`
-          : `Capability ${permFormData.id} created and registered successfully`
+          ? `Permission ${permFormData.name} updated successfully.`
+          : `Capability ${permFormData.id} created and registered successfully.`
       );
       setPermModalOpen(false);
       await fetchInitialData();
@@ -414,7 +524,7 @@ export default function UsersPermissionsManager() {
   }
 
   async function handleDeletePermission() {
-    if (!permDeleteTarget) return;
+    if (!permDeleteTarget || !isSuperAdmin) return;
 
     try {
       setIsSubmittingPerm(true);
@@ -433,7 +543,7 @@ export default function UsersPermissionsManager() {
         throw new Error(resJson.error || "Failed to delete permission");
       }
 
-      showFeedback("success", `Capability ${permDeleteTarget.id} deleted successfully`);
+      showFeedback("success", `Capability ${permDeleteTarget.id} deleted successfully.`);
       setPermDeleteTarget(null);
       await fetchInitialData();
     } catch (err: unknown) {
@@ -445,6 +555,11 @@ export default function UsersPermissionsManager() {
   }
 
   function handleToggleRolePermission(roleId: AdminRole, permId: string) {
+    if (!isSuperAdmin) {
+      showFeedback("error", "Privilege Lock: Only Super Administrators can alter role permission mappings.");
+      return;
+    }
+
     setRolePermissions((prev) => {
       const currentList = prev[roleId] || [];
       const has = currentList.includes(permId);
@@ -458,6 +573,11 @@ export default function UsersPermissionsManager() {
   }
 
   async function handleSaveRoleMappings() {
+    if (!isSuperAdmin) {
+      showFeedback("error", "Privilege Lock: Only Super Administrators can alter role permission mappings.");
+      return;
+    }
+
     try {
       setIsSavingRoles(true);
       const rolesToSave: AdminRole[] = ["super_admin", "content_admin", "editor", "viewer"];
@@ -483,12 +603,72 @@ export default function UsersPermissionsManager() {
       }
 
       setHasUnsavedRoleChanges(false);
-      showFeedback("success", "Role permission mappings saved to Supabase successfully!");
+      showFeedback("success", "Role permission mappings saved to Supabase PostgreSQL successfully!");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to save role mappings";
       showFeedback("error", msg);
     } finally {
       setIsSavingRoles(false);
+    }
+  }
+
+  // ============================================================================
+  // Session & Cookie Governance Actions
+  // ============================================================================
+
+  async function handleRevokeSession(sessionId: string) {
+    try {
+      setIsRevokingSession(true);
+      const res = await fetch("/api/admin/cms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entity: "sessions",
+          action: "revoke",
+          data: { sessionId },
+        }),
+      });
+
+      const resJson = await res.json();
+      if (!res.ok || !resJson.success) {
+        throw new Error(resJson.error || "Failed to revoke session");
+      }
+
+      showFeedback("success", "Session terminated immediately. Cookie invalidated.");
+      await fetchInitialData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to revoke session";
+      showFeedback("error", msg);
+    } finally {
+      setIsRevokingSession(false);
+    }
+  }
+
+  async function handleRevokeAllOtherSessions() {
+    try {
+      setIsRevokingSession(true);
+      const res = await fetch("/api/admin/cms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entity: "sessions",
+          action: "revokeAllOther",
+          data: {},
+        }),
+      });
+
+      const resJson = await res.json();
+      if (!res.ok || !resJson.success) {
+        throw new Error(resJson.error || "Failed to terminate sessions");
+      }
+
+      showFeedback("success", resJson.message || "All other active sessions have been terminated.");
+      await fetchInitialData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to terminate other sessions";
+      showFeedback("error", msg);
+    } finally {
+      setIsRevokingSession(false);
     }
   }
 
@@ -524,16 +704,16 @@ export default function UsersPermissionsManager() {
         <div>
           <h1 className="flex items-center gap-2.5 text-2xl font-bold text-white">
             <ShieldCheck className="h-6 w-6 text-indigo-400" />
-            Access Control, Users & Permission Manager
+            Access Control, Users & Security Governance
           </h1>
           <p className="mt-1 text-sm text-slate-400">
-            Provision administrators, manage role authority (RBAC), and define granular capability policies with live database persistence.
+            Hierarchical role enforcement, live Supabase synchronization, and active cookie session monitoring.
           </p>
         </div>
 
         {/* Global Action Buttons */}
         <div className="flex items-center gap-3">
-          {activeTab === "users" ? (
+          {activeTab === "users" && (
             <button
               onClick={openCreateUserModal}
               className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-600/20 transition-all hover:bg-indigo-500 active:scale-95"
@@ -541,16 +721,20 @@ export default function UsersPermissionsManager() {
               <Plus className="h-4 w-4" />
               Add Administrator
             </button>
-          ) : (
+          )}
+
+          {activeTab === "permissions" && (
             <div className="flex items-center gap-2">
-              <button
-                onClick={openCreatePermModal}
-                className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-              >
-                <Plus className="h-4 w-4 text-indigo-400" />
-                Add Permission Key
-              </button>
-              {hasUnsavedRoleChanges && (
+              {isSuperAdmin && (
+                <button
+                  onClick={openCreatePermModal}
+                  className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+                >
+                  <Plus className="h-4 w-4 text-indigo-400" />
+                  Add Permission Key
+                </button>
+              )}
+              {hasUnsavedRoleChanges && isSuperAdmin && (
                 <button
                   onClick={handleSaveRoleMappings}
                   disabled={isSavingRoles}
@@ -560,6 +744,26 @@ export default function UsersPermissionsManager() {
                   Save Role Mappings
                 </button>
               )}
+            </div>
+          )}
+
+          {activeTab === "sessions" && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={fetchInitialData}
+                className="flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-3.5 py-2 text-sm font-semibold text-slate-300 hover:bg-slate-700 hover:text-white"
+              >
+                <RefreshCw className="h-4 w-4 text-indigo-400" />
+                Refresh
+              </button>
+              <button
+                onClick={handleRevokeAllOtherSessions}
+                disabled={isRevokingSession}
+                className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-300 hover:bg-amber-500/20"
+              >
+                <LogOut className="h-4 w-4" />
+                Log Out Other Devices
+              </button>
             </div>
           )}
         </div>
@@ -583,7 +787,7 @@ export default function UsersPermissionsManager() {
         </div>
       )}
 
-      {/* Primary Navigation Tabs */}
+      {/* Three Primary Navigation Tabs */}
       <div className="flex items-center gap-2 border-b border-slate-800 pb-2">
         <button
           onClick={() => setActiveTab("users")}
@@ -611,10 +815,22 @@ export default function UsersPermissionsManager() {
             <span className="h-2 w-2 rounded-full bg-emerald-400" title="Unsaved Changes" />
           )}
         </button>
+
+        <button
+          onClick={() => setActiveTab("sessions")}
+          className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-all ${
+            activeTab === "sessions"
+              ? "bg-indigo-600/20 text-indigo-300 border border-indigo-500/30"
+              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
+          }`}
+        >
+          <Cookie className="h-4 w-4" />
+          Cookies & Active Sessions ({sessions.length})
+        </button>
       </div>
 
       {/* ==================================================================== */}
-      {/* TAB 1: ADMINISTRATORS ROSTER & CRUD */}
+      {/* TAB 1: ADMINISTRATORS ROSTER & HIERARCHICAL CRUD */}
       {/* ==================================================================== */}
       {activeTab === "users" && (
         <div className="space-y-6">
@@ -631,13 +847,16 @@ export default function UsersPermissionsManager() {
               </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-              <span className="text-xs text-slate-400">Super Administrators</span>
-              <p className="mt-1 text-2xl font-bold text-purple-400">
-                {users.filter((u) => u.roleId === "super_admin").length}
+              <span className="text-xs text-slate-400">Your Authority Tier</span>
+              <p className="mt-1 text-sm font-bold text-purple-400">
+                {currentUser ? ROLE_CONFIG[currentUser.roleId]?.label : "Super Administrator"}
+                <span className="ml-1.5 text-xs text-slate-400 font-normal">
+                  (Rank {currentUser ? ROLE_HIERARCHY[currentUser.roleId]?.rank : 100})
+                </span>
               </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-              <span className="text-xs text-slate-400">Current Session</span>
+              <span className="text-xs text-slate-400">Current Session User</span>
               <p className="mt-1 truncate text-xs font-mono text-indigo-300">
                 {currentUser?.email || "Authenticated Admin"}
               </p>
@@ -686,19 +905,26 @@ export default function UsersPermissionsManager() {
                 <thead className="border-b border-slate-800 bg-slate-950/80 text-xs uppercase tracking-wider text-slate-400">
                   <tr>
                     <th className="px-6 py-4">Administrator</th>
-                    <th className="px-6 py-4">Role & Authority</th>
+                    <th className="px-6 py-4">Role & Hierarchy Rank</th>
                     <th className="px-6 py-4">Status</th>
                     <th className="px-6 py-4">Created / Last Login</th>
-                    <th className="px-6 py-4 text-right">Actions</th>
+                    <th className="px-6 py-4 text-right">Actions & Authority</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
                   {filteredUsers.map((user) => {
                     const roleBadge = ROLE_CONFIG[user.roleId] || ROLE_CONFIG.viewer;
+                    const rank = ROLE_HIERARCHY[user.roleId]?.rank || 0;
                     const isSelf = currentUser?.id === user.id;
+                    const canEditThisUser = isSelf || (currentUser && canManageUser(currentUser.roleId, user.roleId, false));
 
                     return (
-                      <tr key={user.id} className="transition-colors hover:bg-slate-800/30">
+                      <tr
+                        key={user.id}
+                        className={`transition-colors ${
+                          isSelf ? "bg-indigo-950/20 hover:bg-indigo-950/30" : "hover:bg-slate-800/30"
+                        }`}
+                      >
                         {/* Name & Email */}
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
@@ -713,8 +939,8 @@ export default function UsersPermissionsManager() {
                               <div className="flex items-center gap-2">
                                 <p className="font-semibold text-white">{user.fullName}</p>
                                 {isSelf && (
-                                  <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300">
-                                    You
+                                  <span className="rounded bg-indigo-500/20 px-2 py-0.5 text-[11px] font-semibold text-indigo-300 border border-indigo-500/30">
+                                    You (Active Session)
                                   </span>
                                 )}
                               </div>
@@ -723,34 +949,49 @@ export default function UsersPermissionsManager() {
                           </div>
                         </td>
 
-                        {/* Role */}
+                        {/* Role & Rank */}
                         <td className="px-6 py-4">
-                          <span
-                            className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold ${roleBadge.bg} ${roleBadge.border} ${roleBadge.text}`}
-                          >
-                            {roleBadge.label}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`inline-flex items-center rounded-md border px-2.5 py-1 text-xs font-semibold ${roleBadge.bg} ${roleBadge.border} ${roleBadge.text}`}
+                            >
+                              {roleBadge.label}
+                            </span>
+                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono text-slate-400">
+                              Rank {rank}
+                            </span>
+                          </div>
                         </td>
 
                         {/* Status */}
                         <td className="px-6 py-4">
-                          <button
-                            onClick={() => handleToggleUserActive(user)}
-                            className="flex items-center gap-2 text-xs font-medium transition-colors hover:opacity-80"
-                            title="Click to toggle active state"
-                          >
-                            {user.isActive ? (
-                              <>
-                                <ToggleRight className="h-5 w-5 text-emerald-400" />
-                                <span className="text-emerald-400">Active</span>
-                              </>
-                            ) : (
-                              <>
-                                <ToggleLeft className="h-5 w-5 text-slate-600" />
-                                <span className="text-slate-500">Inactive</span>
-                              </>
-                            )}
-                          </button>
+                          {isSelf ? (
+                            <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium" title="Cannot deactivate own account">
+                              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                              Active (Locked)
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => handleToggleUserActive(user)}
+                              disabled={!canEditThisUser}
+                              className={`flex items-center gap-2 text-xs font-medium transition-colors ${
+                                canEditThisUser ? "hover:opacity-80 cursor-pointer" : "opacity-40 cursor-not-allowed"
+                              }`}
+                              title={canEditThisUser ? "Click to toggle active state" : "Locked: Higher rank than your tier"}
+                            >
+                              {user.isActive ? (
+                                <>
+                                  <ToggleRight className="h-5 w-5 text-emerald-400" />
+                                  <span className="text-emerald-400">Active</span>
+                                </>
+                              ) : (
+                                <>
+                                  <ToggleLeft className="h-5 w-5 text-slate-600" />
+                                  <span className="text-slate-500">Inactive</span>
+                                </>
+                              )}
+                            </button>
+                          )}
                         </td>
 
                         {/* Dates */}
@@ -767,17 +1008,42 @@ export default function UsersPermissionsManager() {
                         {/* Actions */}
                         <td className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-2">
+                            {/* Edit Button */}
                             <button
                               onClick={() => openEditUserModal(user)}
-                              className="rounded-lg border border-slate-700 bg-slate-800 p-2 text-slate-300 transition-colors hover:border-slate-600 hover:bg-slate-700 hover:text-white"
-                              title="Edit Administrator"
+                              disabled={!canEditThisUser}
+                              className={`rounded-lg border p-2 text-xs transition-colors ${
+                                canEditThisUser
+                                  ? "border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-600 hover:bg-slate-700 hover:text-white"
+                                  : "border-slate-800 bg-slate-900/40 text-slate-600 cursor-not-allowed"
+                              }`}
+                              title={
+                                isSelf
+                                  ? "Edit Your Profile (Role Locked)"
+                                  : canEditThisUser
+                                  ? "Edit Administrator"
+                                  : "Protected: Cannot edit administrator of equal or higher tier"
+                              }
                             >
-                              <Edit2 className="h-4 w-4" />
+                              {canEditThisUser ? <Edit2 className="h-4 w-4" /> : <Lock className="h-4 w-4 text-slate-600" />}
                             </button>
+
+                            {/* Delete Button */}
                             <button
                               onClick={() => setUserDeleteTarget(user)}
-                              className="rounded-lg border border-red-500/20 bg-red-500/10 p-2 text-red-400 transition-colors hover:border-red-500/40 hover:bg-red-500/20"
-                              title="Delete Administrator"
+                              disabled={isSelf || !canEditThisUser}
+                              className={`rounded-lg border p-2 text-xs transition-colors ${
+                                !isSelf && canEditThisUser
+                                  ? "border-red-500/20 bg-red-500/10 text-red-400 hover:border-red-500/40 hover:bg-red-500/20"
+                                  : "border-slate-800 bg-slate-900/40 text-slate-700 cursor-not-allowed"
+                              }`}
+                              title={
+                                isSelf
+                                  ? "Cannot delete your own active account"
+                                  : canEditThisUser
+                                  ? "Delete Administrator"
+                                  : "Protected: Cannot delete administrator of equal or higher tier"
+                              }
                             >
                               <Trash2 className="h-4 w-4" />
                             </button>
@@ -794,10 +1060,21 @@ export default function UsersPermissionsManager() {
       )}
 
       {/* ==================================================================== */}
-      {/* TAB 2: ROLE PERMISSIONS MATRIX & CAPABILITY CRUD */}
+      {/* TAB 2: ROLE PERMISSIONS MATRIX (SUPER ADMIN EXCLUSIVE EDITING) */}
       {/* ==================================================================== */}
       {activeTab === "permissions" && (
         <div className="space-y-6">
+          {!isSuperAdmin && (
+            <div className="flex items-center gap-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-4 text-xs text-indigo-300">
+              <Lock className="h-5 w-5 flex-shrink-0 text-indigo-400" />
+              <div>
+                <strong className="text-white">Read-Only Policy Mode:</strong> You are currently authenticated as{" "}
+                <span className="font-semibold text-white">{currentUser ? ROLE_CONFIG[currentUser.roleId]?.label : "Auditor"}</span>.
+                Platform-wide role capability matrix modifications are restricted exclusively to Super Administrators.
+              </div>
+            </div>
+          )}
+
           {/* Controls Bar */}
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between rounded-xl border border-slate-800 bg-slate-950 p-4">
             <div className="relative flex-1">
@@ -846,25 +1123,25 @@ export default function UsersPermissionsManager() {
                   <tr>
                     <th className="px-4 py-3.5">Permission Key & Capability</th>
                     <th className="px-3 py-3.5 text-center">Category</th>
-                    <th className="px-2 py-3.5 text-center" title="Super Administrator">
-                      Super
+                    <th className="px-2 py-3.5 text-center" title="Super Administrator (Rank 100)">
+                      Super (100)
                     </th>
-                    <th className="px-2 py-3.5 text-center" title="Content Administrator">
-                      Content
+                    <th className="px-2 py-3.5 text-center" title="Content Administrator (Rank 75)">
+                      Content (75)
                     </th>
-                    <th className="px-2 py-3.5 text-center" title="Staff Editor">
-                      Editor
+                    <th className="px-2 py-3.5 text-center" title="Staff Editor (Rank 50)">
+                      Editor (50)
                     </th>
-                    <th className="px-2 py-3.5 text-center" title="Auditor / Viewer">
-                      Viewer
+                    <th className="px-2 py-3.5 text-center" title="Auditor / Viewer (Rank 25)">
+                      Viewer (25)
                     </th>
-                    <th className="px-3 py-3.5 text-right">Actions</th>
+                    {isSuperAdmin && <th className="px-3 py-3.5 text-right">Actions</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
                   {filteredPermissions.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                      <td colSpan={isSuperAdmin ? 7 : 6} className="px-4 py-8 text-center text-slate-500">
                         No capabilities match your query.
                       </td>
                     </tr>
@@ -904,41 +1181,53 @@ export default function UsersPermissionsManager() {
 
                             return (
                               <td key={r} className="px-2 py-3 text-center">
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleRolePermission(r, perm.id)}
-                                  className="p-1 rounded transition-colors hover:bg-slate-800"
-                                  title={`Click to ${isGranted ? "revoke from" : "grant to"} ${ROLE_CONFIG[r].label}`}
-                                >
-                                  {isGranted ? (
-                                    <CheckCircle2 className="mx-auto h-4 w-4 text-emerald-400" />
-                                  ) : (
-                                    <XCircle className="mx-auto h-4 w-4 text-slate-700 hover:text-slate-500" />
-                                  )}
-                                </button>
+                                {isSuperAdmin ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleRolePermission(r, perm.id)}
+                                    className="p-1 rounded transition-colors hover:bg-slate-800"
+                                    title={`Click to ${isGranted ? "revoke from" : "grant to"} ${ROLE_CONFIG[r].label}`}
+                                  >
+                                    {isGranted ? (
+                                      <CheckCircle2 className="mx-auto h-4 w-4 text-emerald-400" />
+                                    ) : (
+                                      <XCircle className="mx-auto h-4 w-4 text-slate-700 hover:text-slate-500" />
+                                    )}
+                                  </button>
+                                ) : (
+                                  <div>
+                                    {isGranted ? (
+                                      <CheckCircle2 className="mx-auto h-4 w-4 text-emerald-400 opacity-60" />
+                                    ) : (
+                                      <XCircle className="mx-auto h-4 w-4 text-slate-800" />
+                                    )}
+                                  </div>
+                                )}
                               </td>
                             );
                           })}
 
-                          {/* Edit / Delete Capability */}
-                          <td className="px-3 py-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <button
-                                onClick={() => openEditPermModal(perm)}
-                                className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
-                                title="Edit Capability"
-                              >
-                                <Edit2 className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                onClick={() => setPermDeleteTarget(perm)}
-                                className="rounded p-1 text-red-400 hover:bg-red-500/10 hover:text-red-300"
-                                title="Delete Capability"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </div>
-                          </td>
+                          {/* Edit / Delete Capability (Super Admin Only) */}
+                          {isSuperAdmin && (
+                            <td className="px-3 py-3 text-right">
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  onClick={() => openEditPermModal(perm)}
+                                  className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                                  title="Edit Capability"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => setPermDeleteTarget(perm)}
+                                  className="rounded p-1 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                                  title="Delete Capability"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            </td>
+                          )}
                         </tr>
                       );
                     })
@@ -1013,7 +1302,153 @@ export default function UsersPermissionsManager() {
       )}
 
       {/* ==================================================================== */}
-      {/* MODAL: ADD / EDIT ADMINISTRATOR */}
+      {/* TAB 3: COOKIES & ACTIVE SESSIONS GOVERNANCE */}
+      {/* ==================================================================== */}
+      {activeTab === "sessions" && (
+        <div className="space-y-6">
+          {/* Security & Cookie Architecture Cards */}
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <Cookie className="h-4 w-4 text-amber-400" />
+                Session Cookie Name
+              </div>
+              <p className="mt-2 font-mono text-sm font-bold text-white">{cookieName}</p>
+              <p className="mt-1 text-[11px] text-slate-400">Next.js 16 Base64url signed payload</p>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                Cookie Security Flags
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="rounded bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+                  HttpOnly: true
+                </span>
+                <span className="rounded bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[10px] font-semibold text-blue-400">
+                  SameSite: Lax
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-slate-400">XSS & CSRF hardened</p>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <Fingerprint className="h-4 w-4 text-indigo-400" />
+                Live Database Validation
+              </div>
+              <p className="mt-2 text-sm font-bold text-emerald-400">Active Query Guard</p>
+              <p className="mt-1 text-[11px] text-slate-400">Validates user is_active on every request</p>
+            </div>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <Laptop className="h-4 w-4 text-purple-400" />
+                Tracked Active Devices
+              </div>
+              <p className="mt-2 text-2xl font-bold text-white">{sessions.length}</p>
+              <p className="mt-1 text-[11px] text-slate-400">Total verified active login sessions</p>
+            </div>
+          </div>
+
+          {/* Active Sessions Roster Table */}
+          <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/60 shadow-lg">
+            <div className="border-b border-slate-800 bg-slate-950 p-4 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <KeyRound className="h-4 w-4 text-indigo-400" />
+                  Active Administrator Sessions
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Real-time active tokens. Revoking an administrator session forces immediate re-authentication.
+                </p>
+              </div>
+              <span className="rounded-full bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-300">
+                {sessions.length} Device Sessions
+              </span>
+            </div>
+
+            {sessions.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center text-slate-400">
+                <Laptop className="h-8 w-8 text-slate-600" />
+                <p className="mt-2 text-xs">No active sessions tracked.</p>
+              </div>
+            ) : (
+              <table className="w-full text-left text-xs">
+                <thead className="border-b border-slate-800 bg-slate-950/80 uppercase tracking-wider text-slate-400">
+                  <tr>
+                    <th className="px-6 py-3.5">Session User</th>
+                    <th className="px-6 py-3.5">Authority Tier</th>
+                    <th className="px-6 py-3.5">IP Address & Device</th>
+                    <th className="px-6 py-3.5">Session Age & Expiration</th>
+                    <th className="px-6 py-3.5 text-right">Revocation</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {sessions.map((sess) => {
+                    const roleBadge = ROLE_CONFIG[sess.roleId] || ROLE_CONFIG.viewer;
+
+                    return (
+                      <tr key={sess.id} className="transition-colors hover:bg-slate-850">
+                        {/* User */}
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-white">{sess.fullName}</span>
+                            {sess.isCurrent && (
+                              <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300 border border-indigo-500/30">
+                                This Device
+                              </span>
+                            )}
+                          </div>
+                          <p className="font-mono text-[11px] text-slate-400">{sess.email}</p>
+                        </td>
+
+                        {/* Role */}
+                        <td className="px-6 py-4">
+                          <span
+                            className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold ${roleBadge.bg} ${roleBadge.border} ${roleBadge.text}`}
+                          >
+                            {roleBadge.label}
+                          </span>
+                        </td>
+
+                        {/* IP & Device */}
+                        <td className="px-6 py-4">
+                          <p className="font-mono text-white">{sess.ipAddress}</p>
+                          <p className="text-[11px] text-slate-400 truncate max-w-xs">{sess.userAgent}</p>
+                        </td>
+
+                        {/* Dates */}
+                        <td className="px-6 py-4 text-slate-400">
+                          <div>Active: {new Date(sess.lastActiveAt).toLocaleTimeString()}</div>
+                          <div className="text-[11px] text-slate-500">
+                            Expires: {new Date(sess.expiresAt).toLocaleDateString()}
+                          </div>
+                        </td>
+
+                        {/* Actions */}
+                        <td className="px-6 py-4 text-right">
+                          <button
+                            onClick={() => handleRevokeSession(sess.id)}
+                            disabled={isRevokingSession}
+                            className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-1 text-xs font-semibold text-red-300 hover:bg-red-500/20"
+                          >
+                            Revoke
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================================== */}
+      {/* MODAL: ADD / EDIT ADMINISTRATOR (WITH HIERARCHICAL GUARDS) */}
       {/* ==================================================================== */}
       {userModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
@@ -1030,6 +1465,16 @@ export default function UsersPermissionsManager() {
                 <X className="h-5 w-5" />
               </button>
             </div>
+
+            {editingUser && currentUser?.id === editingUser.id && (
+              <div className="mt-4 rounded-lg border border-indigo-500/30 bg-indigo-500/10 p-3 text-xs text-indigo-300 flex items-center gap-2">
+                <Lock className="h-4 w-4 flex-shrink-0 text-indigo-400" />
+                <span>
+                  <strong>Self-Account Guard:</strong> You are editing your own profile. Your Role Tier and Active Status
+                  are locked and can only be altered by a higher authority tier.
+                </span>
+              </div>
+            )}
 
             <form onSubmit={handleSaveUser} className="mt-5 space-y-4">
               {/* Full Name */}
@@ -1062,20 +1507,27 @@ export default function UsersPermissionsManager() {
                 />
               </div>
 
-              {/* Role Selection */}
+              {/* Role Selection (Locked if self or if cannot assign) */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  Assigned Administrative Role
+                  Assigned Administrative Role Tier
                 </label>
                 <select
                   value={userFormData.roleId}
+                  disabled={Boolean(editingUser && currentUser?.id === editingUser.id)}
                   onChange={(e) => setUserFormData({ ...userFormData, roleId: e.target.value as AdminRole })}
-                  className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-3.5 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                  className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-3.5 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <option value="super_admin">Super Administrator (Unrestricted)</option>
-                  <option value="content_admin">Content Administrator (Content & Inquiries)</option>
-                  <option value="editor">Staff Editor (Catalog & Articles)</option>
-                  <option value="viewer">Auditor / Viewer (Read-only)</option>
+                  {(["viewer", "editor", "content_admin", "super_admin"] as AdminRole[]).map((r) => {
+                    const allowed = isSuperAdmin || (currentUser && canAssignRole(currentUser.roleId, r)) || (editingUser && editingUser.roleId === r);
+                    if (!allowed) return null;
+
+                    return (
+                      <option key={r} value={r}>
+                        {ROLE_CONFIG[r].label} (Rank {ROLE_HIERARCHY[r].rank})
+                      </option>
+                    );
+                  })}
                 </select>
                 <p className="mt-1 text-[11px] text-slate-400">
                   {ROLE_CONFIG[userFormData.roleId]?.desc}
@@ -1116,29 +1568,33 @@ export default function UsersPermissionsManager() {
                 </div>
               </div>
 
-              {/* Active Toggle */}
+              {/* Active Toggle (Locked if self) */}
               <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950 p-3">
                 <div>
                   <span className="text-xs font-semibold text-white">Account Status</span>
                   <p className="text-[11px] text-slate-400">Enable or disable login access</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setUserFormData({ ...userFormData, isActive: !userFormData.isActive })}
-                  className="flex items-center gap-1.5 text-xs font-medium"
-                >
-                  {userFormData.isActive ? (
-                    <>
-                      <ToggleRight className="h-6 w-6 text-emerald-400" />
-                      <span className="text-emerald-400">Active</span>
-                    </>
-                  ) : (
-                    <>
-                      <ToggleLeft className="h-6 w-6 text-slate-600" />
-                      <span className="text-slate-500">Inactive</span>
-                    </>
-                  )}
-                </button>
+                {editingUser && currentUser?.id === editingUser.id ? (
+                  <span className="text-xs font-medium text-emerald-400">Active (Locked)</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setUserFormData({ ...userFormData, isActive: !userFormData.isActive })}
+                    className="flex items-center gap-1.5 text-xs font-medium"
+                  >
+                    {userFormData.isActive ? (
+                      <>
+                        <ToggleRight className="h-6 w-6 text-emerald-400" />
+                        <span className="text-emerald-400">Active</span>
+                      </>
+                    ) : (
+                      <>
+                        <ToggleLeft className="h-6 w-6 text-slate-600" />
+                        <span className="text-slate-500">Inactive</span>
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
 
               {/* Submit Buttons */}
@@ -1182,7 +1638,7 @@ export default function UsersPermissionsManager() {
 
             {currentUser?.id === userDeleteTarget.id && (
               <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-300">
-                Warning: You cannot delete the account you are currently logged in with.
+                Self-Deletion Guard: You cannot delete the account you are currently logged in with.
               </div>
             )}
 
@@ -1242,11 +1698,6 @@ export default function UsersPermissionsManager() {
                   onChange={(e) => setPermFormData({ ...permFormData, id: e.target.value })}
                   className="mt-1.5 w-full rounded-lg border border-slate-700 bg-slate-950 px-3.5 py-2 font-mono text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none disabled:opacity-50"
                 />
-                {!editingPerm && (
-                  <p className="mt-1 text-[11px] text-slate-400">
-                    Use lowercase format with colon domain (e.g. &apos;domain:action&apos;).
-                  </p>
-                )}
               </div>
 
               {/* Display Name */}

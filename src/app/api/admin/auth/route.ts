@@ -34,7 +34,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: result.error || "Invalid email address or credentials" }, { status: 401 });
       }
 
-      await createSessionCookie(result.user);
+      const ipAddress = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "127.0.0.1";
+      const userAgent = request.headers.get("user-agent") || "Web Browser (macOS)";
+
+      await createSessionCookie(result.user, { ipAddress, userAgent });
       return NextResponse.json({
         success: true,
         user: result.user,

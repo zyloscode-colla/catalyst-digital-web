@@ -68,15 +68,45 @@ Administrators can audit and verify permissions dynamically inside the admin pan
 
 ---
 
-## 🔒 Security & Session Management
+---
 
-- **Session Cookie**: `catalyst_cms_session` (Base64url-encoded payload with `userId`, `email`, `roleId`, and timestamp expiration).
-- **Session Duration**: 7 days (with auto-renewal on login).
-- **Route Guard**: Implemented via Next.js 16 file convention `src/proxy.ts`.
-- **API Guard**: Mutation API endpoint `/api/admin/cms` verifies permissions server-side on every request.
-- **Database Security**: Supabase PostgreSQL tables utilize Row Level Security (RLS) policies defined in `supabase/schema.sql`.
+## 🏛️ Numerical Role Hierarchy & Governance Tiers
+
+To prevent privilege escalation and enforce separation of duties, the system enforces a strict **Numerical Authority Rank**:
+
+| Tier Level | Role Name | Rank Value | Manageable Tiers | Max Assignable Role |
+|---|---|:---:|---|---|
+| **Tier 1** | `super_admin` | **100** | All other tiers (`content_admin`, `editor`, `viewer`, and other `super_admin` except self) | `super_admin` (100) |
+| **Tier 2** | `content_admin` | **75** | `editor` (50) & `viewer` (25) | `editor` (50) |
+| **Tier 3** | `editor` | **50** | `viewer` (25) | `viewer` (25) |
+| **Tier 4** | `viewer` | **25** | None (Read-only) | None |
+
+### 🔒 Core Security Rules:
+1. **Self-Privilege Guard**: An administrator can **never** alter their own access tier/role, deactivate their own account, or delete themselves.
+2. **Hierarchical Boundary**: An administrator at Rank $R$ can **only** manage or alter accounts with strictly lower rank ($R_{target} < R$). Lower-credential administrators cannot edit, deactivate, or delete higher or equal rank administrators.
+3. **Role Assignment Containment**: An administrator can **never** grant a role equal to or higher than their own authority tier ($R_{assign} < R_{requester}$).
+4. **Policy Matrix Exclusive**: Only Super Administrators (`Rank 100`) have authority to modify the system Role Permissions Matrix or register new capability keys.
 
 ---
+
+## 🍪 Cookies & Live Session Management
+
+The system features real-time session tracking, cryptographic cookie hardening, and live Supabase PostgreSQL synchronization:
+
+- **Cookie Name**: `catalyst_cms_session`
+- **Security Flags**:
+  - `HttpOnly: true` (Prevents client-side scripts from reading session tokens, mitigating XSS attacks).
+  - `SameSite: Lax` (Defends against cross-site request forgery CSRF).
+  - `Secure`: Enforced on HTTPS/Production environments.
+  - `Max-Age: 7 Days` (604,800 seconds).
+- **Live Database Validation**:
+  - On every authenticated request, `getCurrentUser()` validates the session against live Supabase `admin_users`.
+  - If an administrator is deactivated (`is_active: false`) or deleted in Supabase, their session cookie is **instantly invalidated** and rejected on their very next click.
+  - If an administrator's role is updated in Supabase, the active session **dynamically reflects the new role** immediately without requiring re-login.
+- **Session Governance UI (`/admin/users` -> Cookies & Active Sessions Tab)**:
+  - View all active devices and login sessions with IP addresses and user-agents.
+  - One-click **"Revoke Session"** to terminate specific devices.
+  - **"Log Out Other Devices"** action to invalidate all other active sessions while preserving the current console session.
 
 ## 🛠️ Adding, Editing & Deleting Users & Permissions
 

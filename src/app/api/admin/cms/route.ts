@@ -1,6 +1,18 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/auth/session";
-import { hasPermission } from "@/lib/auth/permissions";
+import {
+  getCurrentUser,
+  getActiveSessions,
+  getCurrentSessionId,
+  revokeSession,
+  revokeAllOtherSessions,
+  CMS_SESSION_COOKIE,
+} from "@/lib/auth/session";
+import {
+  hasPermission,
+  canManageUser,
+  canAssignRole,
+  canManagePermissionsMatrix,
+} from "@/lib/auth/permissions";
 import {
   createAdminUser,
   createBlogPost,
@@ -80,6 +92,20 @@ export async function GET(request: Request) {
           permissions: await getPermissions(),
           roles: await getRolesWithPermissions(),
         });
+      case "sessions": {
+        const currentSessionId = await getCurrentSessionId();
+        return NextResponse.json({
+          sessions: getActiveSessions(currentSessionId || undefined),
+          cookieName: CMS_SESSION_COOKIE,
+          security: {
+            httpOnly: true,
+            sameSite: "Lax",
+            secure: process.env.NODE_ENV === "production",
+            maxAgeDays: 7,
+            validation: "Live Supabase PostgreSQL admin_users verification",
+          },
+        });
+      }
       default:
         return NextResponse.json({
           settings: await getSiteSettings(),
@@ -258,19 +284,106 @@ export async function POST(request: Request) {
         if (!hasPermission(user.roleId, "users:manage")) {
           return NextResponse.json({ error: "Forbidden: insufficient permissions to manage administrators" }, { status: 403 });
         }
+
+        const allUsers = await getAdminUsers();
+
         if (action === "create") {
+          // Hierarchical boundary: cannot create an administrator with rank >= own rank
+          if (!canAssignRole(user.roleId, data.roleId)) {
+            return NextResponse.json(
+              { error: "Hierarchical privilege violation: you cannot create an administrator with a rank equal to or higher than your own." },
+              { status: 403 }
+            );
+          }
           const created = await createAdminUser(data);
           return NextResponse.json({ success: true, data: created });
         }
+
         if (action === "update") {
+          const target = allUsers.find((u) => u.id === data.id);
+          if (!target) {
+            return NextResponse.json({ error: "Administrator not found" }, { status: 404 });
+          }
+
+          // Self-privilege modification prevention
+          if (user.id === data.id) {
+            if (data.roleId && data.roleId !== user.roleId) {
+              return NextResponse.json(
+                { error: "Self-privilege escalation prohibited: you cannot modify your own administrative role." },
+                { status: 403 }
+              );
+            }
+            if (data.isActive !== undefined && data.isActive === false) {
+              return NextResponse.json(
+                { error: "Self-lockout prohibited: you cannot deactivate your own administrative account." },
+                { status: 400 }
+              );
+            }
+          } else {
+            // Hierarchical check: cannot modify administrator of equal or higher rank
+            if (!canManageUser(user.roleId, target.roleId, false)) {
+              return NextResponse.json(
+                { error: "Hierarchical privilege violation: you cannot modify an administrator of equal or higher rank." },
+                { status: 403 }
+              );
+            }
+            // Cannot assign role of equal or higher rank than own
+            if (data.roleId && !canAssignRole(user.roleId, data.roleId)) {
+              return NextResponse.json(
+                { error: "Hierarchical privilege violation: you cannot grant an administrative role equal to or higher than your own rank." },
+                { status: 403 }
+              );
+            }
+          }
+
           const updated = await updateAdminUser(data.id, data, data.newPassword);
           return NextResponse.json({ success: true, data: updated });
         }
+
         if (action === "toggleActive") {
+          if (user.id === data.id) {
+            return NextResponse.json(
+              { error: "Self-lockout prohibited: you cannot deactivate your own administrative account." },
+              { status: 400 }
+            );
+          }
+
+          const target = allUsers.find((u) => u.id === data.id);
+          if (!target) {
+            return NextResponse.json({ error: "Administrator not found" }, { status: 404 });
+          }
+
+          if (!canManageUser(user.roleId, target.roleId, false)) {
+            return NextResponse.json(
+              { error: "Hierarchical privilege violation: you cannot modify the status of an administrator of equal or higher rank." },
+              { status: 403 }
+            );
+          }
+
           const updated = await toggleAdminUserActive(data.id, data.isActive, user.id);
           return NextResponse.json({ success: true, data: updated });
         }
+
         if (action === "delete") {
+          if (user.id === data.id) {
+            return NextResponse.json(
+              { error: "Self-deletion prohibited: you cannot delete your own administrative account." },
+              { status: 400 }
+            );
+          }
+
+          const target = allUsers.find((u) => u.id === data.id);
+          if (!target) {
+            return NextResponse.json({ error: "Administrator not found" }, { status: 404 });
+          }
+
+          if (!canManageUser(user.roleId, target.roleId, false)) {
+            return NextResponse.json(
+              { error: "Hierarchical privilege violation: you cannot delete an administrator of equal or higher rank." },
+              { status: 403 }
+            );
+          }
+
           const result = await deleteAdminUser(data.id, user.id);
           if (!result.success) {
             return NextResponse.json({ error: result.error || "Failed to delete administrator" }, { status: 400 });
@@ -284,6 +397,15 @@ export async function POST(request: Request) {
         if (!hasPermission(user.roleId, "users:manage")) {
           return NextResponse.json({ error: "Forbidden: insufficient permissions to manage access controls" }, { status: 403 });
         }
+
+        // Only Super Administrators can alter the global role permissions matrix or add/delete capability keys
+        if (!canManagePermissionsMatrix(user.roleId)) {
+          return NextResponse.json(
+            { error: "Hierarchical authority restriction: only Super Administrators have authority to modify the system role permissions matrix or alter capabilities." },
+            { status: 403 }
+          );
+        }
+
         if (action === "create") {
           const created = await createPermission(data);
           return NextResponse.json({ success: true, data: created });
@@ -302,6 +424,24 @@ export async function POST(request: Request) {
         if (action === "updateRolePermissions") {
           const result = await updateRolePermissions(data.roleId, data.permissionIds);
           return NextResponse.json({ success: true, data: result });
+        }
+        break;
+      }
+
+      case "sessions": {
+        if (!hasPermission(user.roleId, "users:manage")) {
+          return NextResponse.json({ error: "Forbidden: insufficient permissions to manage sessions" }, { status: 403 });
+        }
+
+        if (action === "revoke") {
+          revokeSession(data.sessionId);
+          return NextResponse.json({ success: true, message: "Session revoked successfully" });
+        }
+
+        if (action === "revokeAllOther") {
+          const currentSessionId = await getCurrentSessionId();
+          const count = revokeAllOtherSessions(currentSessionId || "", user.id);
+          return NextResponse.json({ success: true, count, message: `Terminated ${count} other active session(s)` });
         }
         break;
       }

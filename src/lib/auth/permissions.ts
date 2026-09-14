@@ -158,3 +158,45 @@ export function searchPermissions(query: string): Permission[] {
       p.description.toLowerCase().includes(q)
   );
 }
+
+// ==============================================================================
+// Hierarchical Role Governance & Privilege Containment
+// ==============================================================================
+
+export const ROLE_HIERARCHY: Record<AdminRole, { rank: number; label: string; maxAssignableRank: number }> = {
+  super_admin: { rank: 100, label: "Super Administrator", maxAssignableRank: 100 },
+  content_admin: { rank: 75, label: "Content Administrator", maxAssignableRank: 50 },
+  editor: { rank: 50, label: "Staff Content Editor", maxAssignableRank: 25 },
+  viewer: { rank: 25, label: "Auditor / Read-only Viewer", maxAssignableRank: 0 },
+};
+
+/**
+ * Validates whether a requester can manage (edit, toggle status, delete) a target administrator.
+ * Rules:
+ * 1. An administrator can NEVER modify their own access tier, status, or account deletion.
+ * 2. Super Administrators have full authority over all other users.
+ * 3. Lower tiers can ONLY manage administrators of strictly lower rank (rank > targetRank).
+ */
+export function canManageUser(requesterRole: AdminRole, targetRole: AdminRole, isSelf: boolean): boolean {
+  if (isSelf) return false;
+  if (requesterRole === "super_admin") return true;
+  return ROLE_HIERARCHY[requesterRole].rank > ROLE_HIERARCHY[targetRole].rank;
+}
+
+/**
+ * Validates whether a requester can assign a specific role.
+ * An administrator can never grant a role equal to or higher than their own authority tier.
+ */
+export function canAssignRole(requesterRole: AdminRole, roleToAssign: AdminRole): boolean {
+  if (requesterRole === "super_admin") return true;
+  return ROLE_HIERARCHY[requesterRole].rank > ROLE_HIERARCHY[roleToAssign].rank;
+}
+
+/**
+ * Validates whether a requester can modify the system role permissions matrix or create/delete permission keys.
+ * Only Super Administrators have the authority to alter platform permission assignments.
+ */
+export function canManagePermissionsMatrix(requesterRole: AdminRole): boolean {
+  return requesterRole === "super_admin";
+}
+
