@@ -78,12 +78,14 @@ Administrators can audit and verify permissions dynamically inside the admin pan
 
 ---
 
-## 🛠️ Modifying Credentials or Adding New Users
+## 🛠️ Adding, Editing & Deleting Users & Permissions
 
-To update passwords or add new administrators:
-1. **In Code / Seed Store**: Update `DEMO_ADMIN_USERS` in `src/lib/auth/session.ts` and `src/lib/cms/store.ts`.
-2. **In Supabase Database**: Query or insert into the `admin_users` table in your Supabase project:
-   ```sql
-   INSERT INTO admin_users (email, password_hash, full_name, role_id, is_active)
-   VALUES ('newadmin@catalystdigital.com', 'Admin123!', 'New Admin', 'super_admin', true);
-   ```
+You can now manage administrators and capabilities directly inside the Admin Panel UI:
+1. **Directly in Admin UI (`/admin/users`)**:
+   - **Add Administrator**: Click **"Add Administrator"** in `/admin/users` to provision new users with custom passwords, roles, and status. Passwords are cryptographically hashed using PBKDF2.
+   - **Edit / Reset Password**: Click the edit pencil icon on any administrator to change their role, full name, email, or reset their password.
+   - **Toggle Status**: Click the active/inactive toggle switch to enable or disable login permissions in real time.
+   - **Delete**: Click the trash icon to permanently remove an administrator (with safeguards against deleting your own logged-in account or the last remaining super admin).
+   - **Role Permissions Matrix**: Switch to the **"Role Permissions Matrix"** tab to register new capability keys or toggle checkmarks across roles with live database persistence.
+2. **In Supabase Database**:
+   - Query or inspect the `admin_users`, `permissions`, and `role_permissions` tables directly in your Supabase SQL Editor.
