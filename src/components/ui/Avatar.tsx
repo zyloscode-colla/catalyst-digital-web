@@ -1,4 +1,3 @@
-import Image from "next/image";
 import { cn } from "@/lib/utils";
 
 interface AvatarProps {
@@ -19,12 +18,13 @@ function initialsFromName(name: string): string {
 export function Avatar({ name, image, className }: AvatarProps) {
   if (image) {
     return (
-      <Image
+      <img
         src={image}
         alt={name}
+        loading="lazy"
         width={56}
         height={56}
-        className={cn("h-14 w-14 rounded-full object-cover", className)}
+        className={cn("h-14 w-14 rounded-full object-cover border border-slate-200", className)}
       />
     );
   }

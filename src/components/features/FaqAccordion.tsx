@@ -1,10 +1,17 @@
 import { Accordion } from "@/components/ui/Accordion";
-import { faqs } from "@/data/faqs";
+import { getFaqs } from "@/lib/cms/service";
+import type { FaqItemCMS } from "@/types/cms";
 
-export function FaqAccordion() {
+interface FaqAccordionProps {
+  faqs?: FaqItemCMS[];
+}
+
+export async function FaqAccordion({ faqs: propFaqs }: FaqAccordionProps) {
+  const items = propFaqs || (await getFaqs(true));
+
   return (
     <Accordion
-      items={faqs.map((faq) => ({
+      items={items.map((faq) => ({
         id: faq.id,
         title: faq.question,
         content: faq.answer,

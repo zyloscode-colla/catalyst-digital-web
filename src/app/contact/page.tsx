@@ -4,8 +4,21 @@ import { ContactHeroSection } from "@/sections/contact/ContactHeroSection";
 import { FaqSection } from "@/sections/contact/FaqSection";
 import { OfficeSection } from "@/sections/contact/OfficeSection";
 import { TrustSection } from "@/sections/contact/TrustSection";
+import { PageOfflineNotice } from "@/components/layout/PageOfflineNotice";
+import { getPageConfig } from "@/lib/cms/service";
 
-export default function ContactPage() {
+export default async function ContactPage() {
+  const pageConfig = await getPageConfig("contact");
+
+  if (pageConfig && !pageConfig.isActive) {
+    return (
+      <PageOfflineNotice
+        pageTitle={pageConfig.title || "Contact"}
+        offlineMessage={pageConfig.offlineMessage}
+      />
+    );
+  }
+
   return (
     <>
       <ContactHeroSection />

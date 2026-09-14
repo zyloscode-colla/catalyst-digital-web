@@ -1,18 +1,24 @@
 import { Badge } from "@/components/ui/Badge";
 import { Heading } from "@/components/ui/Heading";
 import { SectionWrapper } from "@/components/ui/SectionWrapper";
+import { getSectionConfigs } from "@/lib/cms/service";
 
-export function ServicesHeroSection() {
+export async function ServicesHeroSection() {
+  const sections = await getSectionConfigs("services");
+  const config = sections.find((s) => s.id === "services-hero");
+
+  if (config && !config.isActive) return null;
+
   return (
     <SectionWrapper id="services-hero" className="pt-24 text-center">
       <div className="mx-auto max-w-3xl">
-        <Badge variant="accent">Our Expertise</Badge>
+        <Badge variant="accent">{config?.badge || "Our Expertise"}</Badge>
         <Heading as="h1" size="h1" className="mt-4">
-          Scalable solutions for modern enterprises
+          {config?.heading || "Scalable solutions for modern enterprises"}
         </Heading>
         <p className="mt-5 text-base text-slate-600 sm:text-lg">
-          We combine deep technical expertise with strategic thinking to build software that works at scale.
-          Explore our core service offerings.
+          {config?.subheading ||
+            "We combine deep technical expertise with strategic thinking to build software that works at scale. Explore our core service offerings."}
         </p>
       </div>
     </SectionWrapper>

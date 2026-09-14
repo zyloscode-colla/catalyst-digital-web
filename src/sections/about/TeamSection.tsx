@@ -2,18 +2,26 @@ import { TeamCard } from "@/components/features/TeamCard";
 import { Badge } from "@/components/ui/Badge";
 import { Heading } from "@/components/ui/Heading";
 import { SectionWrapper } from "@/components/ui/SectionWrapper";
-import { team } from "@/data/team";
+import { getSectionConfigs, getTeamMembers } from "@/lib/cms/service";
 
-export function TeamSection() {
+export async function TeamSection() {
+  const sections = await getSectionConfigs("about");
+  const config = sections.find((s) => s.id === "about-team");
+
+  if (config && !config.isActive) return null;
+
+  const team = await getTeamMembers(true);
+
   return (
     <SectionWrapper id="team">
       <div className="text-center">
-        <Badge>Team</Badge>
+        <Badge>{config?.badge || "Team"}</Badge>
         <Heading as="h2" className="mt-3">
-          The minds behind the mission
+          {config?.heading || "The minds behind the mission"}
         </Heading>
         <p className="mx-auto mt-3 max-w-2xl text-slate-600">
-          Cross-functional experts in strategy, design, and engineering, aligned around meaningful outcomes.
+          {config?.subheading ||
+            "Cross-functional experts in strategy, design, and engineering, aligned around meaningful outcomes."}
         </p>
       </div>
       <div className="mt-10 grid gap-6 md:grid-cols-2 lg:grid-cols-4">

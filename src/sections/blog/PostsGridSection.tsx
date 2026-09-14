@@ -1,14 +1,25 @@
 import { BlogCard } from "@/components/features/BlogCard";
 import { Heading } from "@/components/ui/Heading";
 import { SectionWrapper } from "@/components/ui/SectionWrapper";
-import { posts } from "@/data/posts";
+import { getBlogPosts, getSectionConfigs } from "@/lib/cms/service";
+import type { BlogPostItem } from "@/types/cms";
 
-export function PostsGridSection() {
-  const remainingPosts = posts.slice(1);
+interface PostsGridSectionProps {
+  posts?: BlogPostItem[];
+}
+
+export async function PostsGridSection({ posts: propPosts }: PostsGridSectionProps) {
+  const sections = await getSectionConfigs("blog");
+  const config = sections.find((s) => s.id === "blog-posts-grid");
+
+  if (config && !config.isActive) return null;
+
+  const allPosts = propPosts || (await getBlogPosts(true));
+  const remainingPosts = allPosts.slice(1);
 
   return (
     <SectionWrapper id="posts-grid" className="pt-6">
-      <Heading as="h2">Recent articles</Heading>
+      <Heading as="h2">{config?.heading || "Recent articles"}</Heading>
       {remainingPosts.length > 0 ? (
         <div className="mt-6 grid gap-6 md:grid-cols-2">
           {remainingPosts.map((post) => (
