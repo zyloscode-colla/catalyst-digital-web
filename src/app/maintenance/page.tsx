@@ -2,6 +2,8 @@ import Link from "next/link";
 import { getSiteSettings } from "@/lib/cms/service";
 import { ShieldAlert, Mail, ArrowRight } from "lucide-react";
 
+export const dynamic = "force-dynamic";
+
 export default async function MaintenancePage() {
   const settings = await getSiteSettings();
 

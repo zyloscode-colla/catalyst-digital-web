@@ -223,7 +223,7 @@ export default function UsersPermissionsManager() {
     setTimeout(() => setFeedback(null), 5000);
   }
 
-  const isSuperAdmin = currentUser?.roleId === "super_admin";
+  const isSuperAdmin = currentUser ? canManagePermissionsMatrix(currentUser.roleId) : false;
 
   // ============================================================================
   // User Actions (Create, Edit, Toggle, Delete) with Hierarchical Enforcement
@@ -1324,13 +1324,15 @@ export default function UsersPermissionsManager() {
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <span className="rounded bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
-                  HttpOnly: true
+                  HttpOnly: {cookieMeta?.httpOnly !== false ? "true" : "false"}
                 </span>
                 <span className="rounded bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[10px] font-semibold text-blue-400">
-                  SameSite: Lax
+                  SameSite: {cookieMeta?.sameSite || "Lax"}
                 </span>
               </div>
-              <p className="mt-1 text-[11px] text-slate-400">XSS & CSRF hardened</p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                MaxAge: {cookieMeta?.maxAgeDays ? `${cookieMeta.maxAgeDays}d` : "7d"} • XSS & CSRF hardened
+              </p>
             </div>
 
             <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">

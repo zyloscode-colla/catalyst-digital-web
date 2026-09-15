@@ -7,6 +7,8 @@ import { PostsGridSection } from "@/sections/blog/PostsGridSection";
 import { PageOfflineNotice } from "@/components/layout/PageOfflineNotice";
 import { getBlogPosts, getPageConfig } from "@/lib/cms/service";
 
+export const dynamic = "force-dynamic";
+
 export default async function BlogPage() {
   const pageConfig = await getPageConfig("blog");
 

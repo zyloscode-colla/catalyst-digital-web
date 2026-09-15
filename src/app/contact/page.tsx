@@ -7,6 +7,8 @@ import { TrustSection } from "@/sections/contact/TrustSection";
 import { PageOfflineNotice } from "@/components/layout/PageOfflineNotice";
 import { getPageConfig } from "@/lib/cms/service";
 
+export const dynamic = "force-dynamic";
+
 export default async function ContactPage() {
   const pageConfig = await getPageConfig("contact");
 

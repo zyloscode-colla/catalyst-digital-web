@@ -7,6 +7,8 @@ import { WorkHeroSection } from "@/sections/work/WorkHeroSection";
 import { PageOfflineNotice } from "@/components/layout/PageOfflineNotice";
 import { getPageConfig, getProjects } from "@/lib/cms/service";
 
+export const dynamic = "force-dynamic";
+
 export default async function WorkPage() {
   const pageConfig = await getPageConfig("work");
 

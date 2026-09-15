@@ -911,7 +911,7 @@ export async function createAdminUser(input: CreateAdminUserInput): Promise<Admi
   const passwordHash = hashPassword(passwordToHash);
   const now = new Date().toISOString();
 
-  let newId = `usr-${Date.now()}`;
+  const newId = `usr-${Date.now()}`;
 
   if (isSupabaseConfigured()) {
     const supabase = getSupabaseAdminClient();
@@ -1176,6 +1176,10 @@ export async function getRolesWithPermissions(): Promise<Role[]> {
         supabase.from("roles").select("id, name, description"),
         supabase.from("role_permissions").select("role_id, permission_id"),
       ]);
+
+      if (mapErr) {
+        console.warn("Supabase role_permissions warning:", mapErr);
+      }
 
       if (!rolesErr && rolesData && rolesData.length > 0) {
         const mappings = mappingsData || [];

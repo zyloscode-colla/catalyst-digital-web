@@ -7,6 +7,8 @@ import { TeamPreviewSection } from "@/sections/home/TeamPreviewSection";
 import { PageOfflineNotice } from "@/components/layout/PageOfflineNotice";
 import { getPageConfig } from "@/lib/cms/service";
 
+export const dynamic = "force-dynamic";
+
 export default async function HomePage() {
   const pageConfig = await getPageConfig("home");
 

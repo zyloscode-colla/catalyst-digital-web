@@ -7,6 +7,8 @@ import { ValuesSection } from "@/sections/about/ValuesSection";
 import { PageOfflineNotice } from "@/components/layout/PageOfflineNotice";
 import { getPageConfig } from "@/lib/cms/service";
 
+export const dynamic = "force-dynamic";
+
 export default async function AboutPage() {
   const pageConfig = await getPageConfig("about");
 

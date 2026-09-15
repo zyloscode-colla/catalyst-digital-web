@@ -5,6 +5,8 @@ import { ServicesInActionSection } from "@/sections/services/ServicesInActionSec
 import { PageOfflineNotice } from "@/components/layout/PageOfflineNotice";
 import { getPageConfig, getServices } from "@/lib/cms/service";
 
+export const dynamic = "force-dynamic";
+
 export default async function ServicesPage() {
   const pageConfig = await getPageConfig("services");
 
