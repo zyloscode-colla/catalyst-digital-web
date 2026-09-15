@@ -5,7 +5,7 @@ import { siteConfig } from "@/config/site";
 
 export function AboutHeroSection() {
   return (
-    <SectionWrapper id="about-hero" className="pt-24 text-center">
+    <SectionWrapper id="about-hero" className="pt-8 sm:pt-14 md:pt-20 lg:pt-24 text-center">
       <div className="mx-auto max-w-3xl">
         <Badge variant="accent">Who We Are</Badge>
         <Heading as="h1" size="h1" className="mt-4">

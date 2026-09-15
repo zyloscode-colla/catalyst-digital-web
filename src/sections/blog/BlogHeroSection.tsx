@@ -4,7 +4,7 @@ import { SectionWrapper } from "@/components/ui/SectionWrapper";
 
 export function BlogHeroSection() {
   return (
-    <SectionWrapper id="blog-hero" className="pt-24 text-center">
+    <SectionWrapper id="blog-hero" className="pt-8 sm:pt-14 md:pt-20 lg:pt-24 text-center">
       <div className="mx-auto max-w-3xl">
         <Badge variant="accent">Latest Updates</Badge>
         <Heading as="h1" size="h1" className="mt-4">

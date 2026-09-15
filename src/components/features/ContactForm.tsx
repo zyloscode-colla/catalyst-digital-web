@@ -49,7 +49,7 @@ export function ContactForm() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="space-y-4 rounded-3xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/50 sm:p-8"
+      className="space-y-4 rounded-2xl sm:rounded-3xl border border-slate-200/90 bg-white p-4 sm:p-6 md:p-8 shadow-xl shadow-slate-200/50"
     >
       <div>
         <p className="text-xl font-bold text-slate-900">Send us a message</p>

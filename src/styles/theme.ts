@@ -10,17 +10,17 @@ export const colors = {
 } as const;
 
 export const spacing = {
-  section: "py-20 md:py-28",
+  section: "py-12 sm:py-18 md:py-24 lg:py-28",
   container: "mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8",
 } as const;
 
 export const typography = {
-  display: "text-4xl font-semibold tracking-tight sm:text-5xl md:text-6xl",
-  h1: "text-3xl font-semibold tracking-tight sm:text-4xl md:text-5xl",
-  h2: "text-2xl font-semibold tracking-tight sm:text-3xl",
-  h3: "text-xl font-semibold tracking-tight sm:text-2xl",
-  h4: "text-lg font-semibold tracking-tight",
-  bodyLg: "text-lg text-slate-600",
-  body: "text-base text-slate-600",
-  caption: "text-sm text-slate-500",
+  display: "text-3xl font-bold tracking-tight sm:text-4xl md:text-5xl lg:text-6xl break-words",
+  h1: "text-2xl font-bold tracking-tight sm:text-3xl md:text-4xl lg:text-5xl break-words",
+  h2: "text-xl font-bold tracking-tight sm:text-2xl md:text-3xl break-words",
+  h3: "text-lg font-semibold tracking-tight sm:text-xl md:text-2xl break-words",
+  h4: "text-base font-semibold tracking-tight sm:text-lg break-words",
+  bodyLg: "text-base sm:text-lg text-slate-600 leading-relaxed",
+  body: "text-sm sm:text-base text-slate-600 leading-relaxed",
+  caption: "text-xs sm:text-sm text-slate-500",
 } as const;

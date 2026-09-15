@@ -24,7 +24,7 @@ export async function TeamSection() {
             "Cross-functional experts in strategy, design, and engineering, aligned around meaningful outcomes."}
         </p>
       </div>
-      <div className="mt-10 grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-8 sm:mt-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         {team.map((member) => (
           <TeamCard key={member.id} member={member} />
         ))}

@@ -21,7 +21,7 @@ export async function PostsGridSection({ posts: propPosts }: PostsGridSectionPro
     <SectionWrapper id="posts-grid" className="pt-6">
       <Heading as="h2">{config?.heading || "Recent articles"}</Heading>
       {remainingPosts.length > 0 ? (
-        <div className="mt-6 grid gap-6 md:grid-cols-2">
+        <div className="mt-6 grid gap-6 sm:grid-cols-2">
           {remainingPosts.map((post) => (
             <BlogCard key={post.id} post={post} />
           ))}

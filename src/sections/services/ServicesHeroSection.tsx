@@ -10,7 +10,7 @@ export async function ServicesHeroSection() {
   if (config && !config.isActive) return null;
 
   return (
-    <SectionWrapper id="services-hero" className="pt-24 text-center">
+    <SectionWrapper id="services-hero" className="pt-8 sm:pt-14 md:pt-20 lg:pt-24 text-center">
       <div className="mx-auto max-w-3xl">
         <Badge variant="accent">{config?.badge || "Our Expertise"}</Badge>
         <Heading as="h1" size="h1" className="mt-4">

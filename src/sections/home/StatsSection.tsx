@@ -10,8 +10,8 @@ export async function StatsSection() {
   if (config && !config.isActive) return null;
 
   return (
-    <SectionWrapper id="stats" className="bg-slate-50">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <SectionWrapper id="stats" className="bg-slate-50 py-10 sm:py-14">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         {homeStats.map((stat) => (
           <StatsCounter key={stat.id} stat={stat} />
         ))}
